@@ -1,0 +1,98 @@
+# HireFlow AI – self-hosted stack.
+# Designed to sit NEXT TO an existing WordPress/MariaDB stack without touching it:
+#   * own project name, own network, own volumes, own Postgres (MariaDB is never modified)
+#   * a single published port (GATEWAY_PORT, bound to 127.0.0.1) for Cloudflare Tunnel to target
+name: hireflow
+
+x-backend: &backend
+  build: ./backend
+  env_file: .env
+  restart: unless-stopped
+  networks: [hireflow]
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: hireflow
+      POSTGRES_USER: hireflow
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes: [pgdata:/var/lib/postgresql/data]
+    networks: [hireflow]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hireflow"]
+      interval: 10s
+      retries: 10
+
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    volumes: [ollama:/root/.ollama]
+    networks: [hireflow]
+    # Uncomment on a host with an NVIDIA GPU + nvidia-container-toolkit:
+    # deploy: { resources: { reservations: { devices: [{ driver: nvidia, count: all, capabilities: [gpu] }] } } }
+
+  ollama-pull:  # one-shot: downloads the configured model, then exits
+    image: ollama/ollama:latest
+    depends_on: [ollama]
+    environment: { OLLAMA_HOST: "http://ollama:11434" }
+    entrypoint: ["sh", "-c", "sleep 5 && ollama pull ${OLLAMA_MODEL:-qwen3:8b}"]
+    networks: [hireflow]
+    restart: "no"
+
+  api:
+    <<: *backend
+    depends_on:
+      db: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 15s
+      retries: 10
+
+  worker:
+    <<: *backend
+    command: ["python", "-m", "app.worker"]
+    depends_on:
+      api: { condition: service_healthy }   # api runs migrations first
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    restart: unless-stopped
+    environment:
+      OLLAMA_BASE_URL: http://ollama:11434
+      WEBUI_AUTH_TRUSTED_EMAIL_HEADER: X-User-Email   # identity injected by nginx after dashboard login
+      WEBUI_AUTH_TRUSTED_NAME_HEADER: X-User-Name
+      ENABLE_SIGNUP: "false"
+      WEBUI_SECRET_KEY: ${WEBUI_SECRET_KEY:?set WEBUI_SECRET_KEY in .env}
+    volumes: [openwebui:/app/backend/data]
+    depends_on: [ollama]
+    networks: [hireflow]
+
+  gateway:
+    build: ./frontend          # builds the React dashboard and serves it with nginx
+    restart: unless-stopped
+    depends_on: [api, open-webui]
+    ports: ["127.0.0.1:${GATEWAY_PORT:-8088}:80"]
+    networks: [hireflow]
+
+  backup:  # nightly encrypted pg_dump (see docs/SECURITY_AND_BACKUP.md)
+    image: postgres:16-alpine
+    restart: unless-stopped
+    env_file: .env
+    environment: { PGPASSWORD: "${POSTGRES_PASSWORD}" }
+    volumes:
+      - ./scripts:/scripts:ro
+      - ${BACKUP_DIR:-./backups}:/backups
+    entrypoint: ["sh", "/scripts/backup-loop.sh"]
+    depends_on: [db]
+    networks: [hireflow]
+
+networks:
+  hireflow:
+    name: hireflow_net
+
+volumes:
+  pgdata:
+  ollama:
+  openwebui:
