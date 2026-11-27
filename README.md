@@ -58,14 +58,19 @@ open http://localhost:8088     # log in with ADMIN_EMAIL / ADMIN_PASSWORD
 
 Then install `wordpress-plugin/hireflow-connector` on the site and enter the platform URL and `WEBHOOK_SECRET`. Full guide: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)
 
-**Demo mode** (no GPU, no mailbox): set `LLM_PROVIDER=mock` and `MAIL_TRANSPORT=log`, then run `python backend/scripts/seed_demo.py http://localhost:8000`.
+**Demo mode** (no GPU, no mailbox, no `.env`). This starts the dashboard with sample data:
+
+```bash
+docker compose -f docker-compose.demo.yml up --build
+# open http://localhost:8088  ->  admin@demo.com / demo-password-123
+```
 
 ## Tests
 
 21 automated tests cover each of the 14 acceptance workflows plus security and edge cases. They run against SQLite and PostgreSQL:
 
 ```bash
-cd backend && pip install -r requirements.txt
+cd backend && pip install -r requirements.txt     # Python 3.11+
 pytest -q                                                   # SQLite
 TEST_DATABASE_URL=postgresql+psycopg2://... pytest -q       # PostgreSQL
 ```

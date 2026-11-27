@@ -1,0 +1,62 @@
+# Demo mode: the full dashboard with sample data in about a minute. No GPU, no model download,
+# no mailbox, no .env needed. The AI is the deterministic "mock" provider and email is
+# recorded as sent but never delivered.
+#
+#   docker compose -f docker-compose.demo.yml up --build
+#   open http://localhost:8088   ->  admin@demo.com / demo-password-123
+#
+# Stop with Ctrl+C. Remove demo data with:  docker compose -f docker-compose.demo.yml down -v
+name: hireflow-demo
+
+x-demo-env: &demo-env
+  DATABASE_URL: postgresql+psycopg2://hireflow:demo@db:5432/hireflow
+  LLM_PROVIDER: mock
+  MAIL_TRANSPORT: log
+  ADMIN_EMAIL: admin@demo.com
+  ADMIN_PASSWORD: demo-password-123
+  JWT_SECRET: demo-only-secret
+  WEBHOOK_SECRET: demo-webhook-secret
+  IMAP_HOST: ""
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment: { POSTGRES_DB: hireflow, POSTGRES_USER: hireflow, POSTGRES_PASSWORD: demo }
+    volumes: [demo_pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hireflow"]
+      interval: 3s
+      retries: 20
+
+  api:
+    build: ./backend
+    environment: *demo-env
+    depends_on:
+      db: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 3s
+      retries: 30
+
+  worker:
+    build: ./backend
+    command: ["python", "-m", "app.worker"]
+    environment: *demo-env
+    depends_on:
+      api: { condition: service_healthy }
+
+  seed:  # one-shot: sends sample applications and emails through the real pipeline, then exits
+    build: ./backend
+    command: ["python", "scripts/seed_demo.py", "http://api:8000"]
+    environment: *demo-env
+    depends_on:
+      api: { condition: service_healthy }
+    restart: "no"
+
+  gateway:
+    build: ./frontend
+    depends_on: [api]
+    ports: ["127.0.0.1:8088:80"]
+
+volumes:
+  demo_pgdata:
